@@ -192,6 +192,7 @@ step_repos() {
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Adding required repositories...${NC}"
     install_pkg "x11-repo" "X11 Repository"
     install_pkg "tur-repo" "TUR Repository (Firefox)"
+    install_pkg "game-repo" "Game/Emulation Repository (Box64, etc.)"
 }
 
 step_x11() {
@@ -204,6 +205,40 @@ step_x11() {
 step_desktop() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing ${DE_NAME} Desktop Environment...${NC}"
+    
+    case $DE_CHOICE in
+        1)
+            install_pkg "xfce4" "XFCE4"
+            install_pkg "xfce4-terminal" "XFCE4 Terminal"
+            install_pkg "xfce4-whiskermenu-plugin" "Whisker Menu"
+            install_pkg "thunar" "Thunar"
+            # Plank is deprecated in Termux. Fallback to Cairo-Dock or skip.
+            if pkg search "^cairo-dock$" 2>/dev/null | grep -q cairo-dock; then
+                install_pkg "cairo-dock" "Cairo-Dock (Plank Alternative)"
+            else
+                echo -e "${YELLOW}[!] Plank unavailable. Using built-in XFCE panel.${NC}"
+            fi
+            ;;
+        2)
+            install_pkg "lxqt" "LXQt"
+            install_pkg "qterminal" "QTerminal"
+            install_pkg "pcmanfm-qt" "PCManFM-Qt"
+            ;;
+        3)
+            install_pkg "mate" "MATE"
+            install_pkg "mate-tweak" "MATE Tweak"
+            install_pkg "mate-terminal" "MATE Terminal"
+            if pkg search "^cairo-dock$" 2>/dev/null | grep -q cairo-dock; then
+                install_pkg "cairo-dock" "Cairo-Dock (Plank Alternative)"
+            fi
+            ;;
+        4)
+            install_pkg "plasma-desktop" "KDE Plasma"
+            install_pkg "konsole" "Konsole"
+            install_pkg "dolphin" "Dolphin"
+            ;;
+    esac
+}
     
     case $DE_CHOICE in
         1)
@@ -236,11 +271,14 @@ step_gpu() {
     $SKIP_GPU && return 0
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Configuring GPU Acceleration...${NC}"
+    
     install_pkg "mesa-zink" "Mesa Zink"
+    install_pkg "mesa-vulkan-drivers" "Vulkan Drivers (ICDs)"
+    install_pkg "vulkan-tools" "Vulkan Tools & Loader"
+    
     if [[ "$GPU_DRIVER" == "freedreno" ]]; then
         install_pkg "mesa-vulkan-icd-freedreno" "Turnip Adreno Driver"
     fi
-    install_pkg "vulkan-loader-android" "Vulkan Loader"
 }
 
 step_audio() {
@@ -296,12 +334,17 @@ step_wine() {
     
     if pkg search "^hangover$" 2>/dev/null | grep -q hangover; then
         install_pkg "hangover" "Hangover Wine"
-        install_pkg "box64" "Box64 Emulator"
-        echo "export PATH=$PREFIX/opt/hangover/bin:\$PATH" >> "$PREFIX/etc/profile.d/wine.sh"
+        echo -e "${GREEN}[+] Hangover includes built-in Box64/Box84 wrappers.${NC}"
+        echo "export PATH=$PREFIX/opt/hangover/bin:\$PATH" > "$PREFIX/etc/profile.d/wine.sh"
+        chmod +x "$PREFIX/etc/profile.d/wine.sh"
     else
-        echo -e "${YELLOW}[!] Hangover not in repo. Falling back to standard Wine...${NC}"
+        echo -e "${YELLOW}[!] Hangover not available. Installing standard Wine + Box64...${NC}"
         install_pkg "wine" "Wine Stable"
-        install_pkg "box64" "Box64 Emulator"
+        if pkg search "^box64$" 2>/dev/null | grep -q box64; then
+            install_pkg "box64" "Box64 Emulator"
+        else
+            echo -e "${YELLOW}[!] Box64 not in repo. Running 32-bit Wine only.${NC}"
+        fi
     fi
 }
 
@@ -310,7 +353,7 @@ step_launchers() {
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Creating Startup/Stop Scripts...${NC}"
     mkdir -p ~/.config
     
-    # Modern Environment Variables
+    # Modern Environment Variables (Android/Termux Optimized)
     cat > ~/.config/linux-gpu.sh << EOF
 export XDG_RUNTIME_DIR="\${PREFIX}/tmp"
 export PULSE_RUNTIME_DIR="\${PREFIX}/tmp/pulse"
@@ -326,41 +369,55 @@ EOF
         echo "export PLASMA_USE_QT_SCALING=1" >> ~/.config/linux-gpu.sh
     fi
 
-    # Plank autostart
+    # =========================================================
+    # SECTION 5: DOCK AUTOSTART FIX (XFCE/MATE Only)
+    # =========================================================
+    DOCK_EXEC="cairo-dock"
+    DOCK_NAME="Cairo-Dock"
+    if ! command -v cairo-dock &>/dev/null; then
+        DOCK_EXEC="echo '[Dock skipped - not installed]'"
+        DOCK_NAME="None"
+    fi
+
     if [[ "$DE_CHOICE" == "1" || "$DE_CHOICE" == "3" ]]; then
         mkdir -p ~/.config/autostart
-        cat > ~/.config/autostart/plank.desktop << 'EOF'
+        cat > ~/.config/autostart/dock.desktop << EOF
 [Desktop Entry]
 Type=Application
-Exec=plank
+Exec=${DOCK_EXEC}
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
-Name=Plank
+Name=${DOCK_NAME}
 EOF
     else
-        rm -f ~/.config/autostart/plank.desktop 2>/dev/null
+        rm -f ~/.config/autostart/dock.desktop 2>/dev/null
     fi
+    # =========================================================
 
-    # Determine commands
+    # Determine execution commands and kill patterns
     case $DE_CHOICE in
-        1) EXEC_CMD="exec startxfce4"; KILL_PATTERN="xfce4-session|plank" ;;
-        2) EXEC_CMD="exec startlxqt"; KILL_PATTERN="lxqt-session" ;;
-        3) EXEC_CMD="exec mate-session"; KILL_PATTERN="mate-session|plank" ;;
-        4) EXEC_CMD="exec startplasma-x11"; KILL_PATTERN="startplasma-x11|kwin_x11" ;;
+        1) EXEC_CMD="exec startxfce4"; KILL_PAT="xfce4-session|plank|xfdesktop" ;;
+        2) EXEC_CMD="exec startlxqt"; KILL_PAT="lxqt-session|lxqt-panel" ;;
+        3) EXEC_CMD="exec mate-session"; KILL_PAT="mate-session|matedesktop|caja" ;;
+        4) EXEC_CMD="exec startplasma-x11"; KILL_PAT="startplasma-x11|kwin_x11|plasmashell" ;;
     esac
 
-    # Start Script
+    # Main Launcher Script (Standalone - runs on Android later)
     cat > ~/start-linux.sh << STARTEREOF
 #!/usr/bin/env bash
-echo "[*] Starting ${DE_NAME}..."
+echo "[*] Starting ${DE_NAME} on Android..."
 source ~/.config/linux-gpu.sh 2>/dev/null
 
 echo "[*] Cleaning old sessions..."
-safe_pkill "termux.x11"
-safe_pkill "${KILL_PATTERN}"
-safe_pkill "pulseaudio|pipewire"
-safe_pkill "dbus"
+# Graceful kill (TERM -> wait -> KILL)
+for pat in "termux.x11" "${KILL_PAT}" "pulseaudio|pipewire" "dbus"; do
+    pkill -TERM -f "\$pat" 2>/dev/null || true
+done
+sleep 1.5
+for pat in "termux.x11" "${KILL_PAT}" "pulseaudio|pipewire" "dbus"; do
+    pkill -KILL -f "\$pat" 2>/dev/null || true
+done
 rm -rf "\${PULSE_RUNTIME_DIR}" 2>/dev/null
 mkdir -p "\${PULSE_RUNTIME_DIR}"
 
@@ -380,14 +437,13 @@ ${EXEC_CMD}
 STARTEREOF
     chmod +x ~/start-linux.sh
 
-    # Stop Script
+    # Stopper Script
     cat > ~/stop-linux.sh << STOPEOF
 #!/usr/bin/env bash
 echo "[*] Stopping ${DE_NAME}..."
-safe_pkill "termux.x11"
-safe_pkill "pulseaudio|pipewire"
-safe_pkill "${KILL_PATTERN}"
-safe_pkill "dbus"
+for pat in "termux.x11" "pulseaudio|pipewire" "${KILL_PAT}" "dbus"; do
+    pkill -KILL -f "\$pat" 2>/dev/null || true
+done
 echo "[*] Desktop stopped."
 STOPEOF
     chmod +x ~/stop-linux.sh
