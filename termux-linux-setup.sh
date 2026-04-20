@@ -328,22 +328,22 @@ step_launchers() {
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Creating Startup/Stop Scripts...${NC}"
     mkdir -p ~/.config
 
-    # 🔥 FIX: Nuke lingering Plank/Cairo-Dock autostarts from previous runs
+    # Nuke old autostarts & cached sessions that spawn Plank/old configs
     rm -f ~/.config/autostart/plank.desktop ~/.config/autostart/cairo-dock.desktop 2>/dev/null
+    rm -rf ~/.cache/sessions/* 2>/dev/null
 
-    # GPU/Env Config (Literal heredoc to prevent expansion bugs)
+    # GPU/Env Config
     cat > ~/.config/linux-gpu.sh << 'GPU_EOF'
 export XDG_RUNTIME_DIR="$PREFIX/tmp"
 export PULSE_RUNTIME_DIR="$PREFIX/tmp/pulse"
+export XDG_SESSION_TYPE=x11
+export XDG_SESSION_CLASS=user
 export MESA_GL_VERSION_OVERRIDE=4.6
 export MESA_GLES_VERSION_OVERRIDE=3.2
 export GALLIUM_DRIVER=zink
 export MESA_LOADER_DRIVER_OVERRIDE=zink
-export LIBGL_ALWAYS_SOFTWARE=0
 export TU_DEBUG=noconform
 export MESA_VK_WSI_PRESENT_MODE=fifo
-export XDG_SESSION_TYPE=x11
-export XDG_SESSION_CLASS=user
 GPU_EOF
 
     if [ "$DE_CHOICE" == "4" ]; then
@@ -351,7 +351,6 @@ GPU_EOF
         echo 'export PLASMA_USE_QT_SCALING=1' >> ~/.config/linux-gpu.sh
     fi
 
-    # DE commands
     case "$DE_CHOICE" in
         1) EXEC_CMD="exec startxfce4"; KILL_PAT="xfce4-session|xfdesktop" ;;
         2) EXEC_CMD="exec startlxqt"; KILL_PAT="lxqt-session|lxqt-panel" ;;
@@ -359,8 +358,7 @@ GPU_EOF
         4) EXEC_CMD="exec startplasma-x11"; KILL_PAT="startplasma-x11|kwin_x11|plasmashell" ;;
     esac
 
-    # 🔥 FIX: Quoted heredoc + explicit dbus startup + hard termux-x11 cleanup
-    cat > ~/start-linux.sh << 'LAUNCHER_EOF'
+    cat > ~/start-linux.sh << LAUNCHER_EOF
 #!/usr/bin/env bash
 echo "[*] Starting ${DE_NAME} on Android..."
 source ~/.config/linux-gpu.sh 2>/dev/null
@@ -368,18 +366,19 @@ source ~/.config/linux-gpu.sh 2>/dev/null
 echo "[*] Cleaning old sessions..."
 pkill -9 -f "termux.x11" 2>/dev/null || true
 pkill -9 -f "${KILL_PAT}" 2>/dev/null || true
-pkill -9 -f "pulseaudio|pipewire" 2>/dev/null || true
+pkill -9 -f "pulseaudio|pipewire|dbus-daemon" 2>/dev/null || true
+rm -rf ~/.cache/sessions/* "\$PULSE_RUNTIME_DIR" 2>/dev/null
 sleep 2
 
-rm -rf "$PULSE_RUNTIME_DIR" 2>/dev/null
-mkdir -p "$PULSE_RUNTIME_DIR" "$PREFIX/tmp/dbus" 2>/dev/null
+mkdir -p "\$PULSE_RUNTIME_DIR" "\$PREFIX/tmp/dbus"
 
-echo "[*] Starting D-Bus session daemon..."
-export $(dbus-daemon --session --fork --print-address 2>/dev/null)
+echo "[*] Starting D-Bus session..."
+eval \$(dbus-daemon --session --fork --print-address 2>/dev/null)
+export DBUS_SESSION_BUS_ADDRESS
 
-echo "[*] Starting audio server..."
+echo "[*] Starting audio..."
 pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null
-export PULSE_SERVER="$PULSE_RUNTIME_DIR/native"
+export PULSE_SERVER="\$PULSE_RUNTIME_DIR/native"
 
 echo "[*] Launching Termux-X11..."
 termux-x11 :0 -legacy-input &
@@ -389,6 +388,11 @@ export DISPLAY=:0
 echo "-----------------------------------------------"
 echo "  [*] Open Termux-X11 app to view desktop!"
 echo "-----------------------------------------------"
+
+# Disable non-functional XFCE services on Android
+xfconf-query -c xfce4-session -p /startup/ssh-agent/enabled -n -t bool -s false 2>/dev/null || true
+xfconf-query -c xfce4-session -p /startup/gpg-agent/enabled -n -t bool -s false 2>/dev/null || true
+
 ${EXEC_CMD}
 LAUNCHER_EOF
     chmod +x ~/start-linux.sh
@@ -398,8 +402,7 @@ LAUNCHER_EOF
 echo "[*] Stopping ${DE_NAME}..."
 pkill -9 -f "termux.x11" 2>/dev/null || true
 pkill -9 -f "${KILL_PAT}" 2>/dev/null || true
-pkill -9 -f "pulseaudio|pipewire" 2>/dev/null || true
-pkill -9 -f "dbus-daemon" 2>/dev/null || true
+pkill -9 -f "pulseaudio|pipewire|dbus-daemon" 2>/dev/null || true
 echo "[*] Desktop stopped."
 STOPPER_EOF
     chmod +x ~/stop-linux.sh
