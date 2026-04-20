@@ -246,12 +246,14 @@ step_gpu() {
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Configuring GPU Acceleration...${NC}"
     
     install_pkg "mesa-zink" "Mesa Zink"
-    install_pkg "mesa-vulkan-drivers" "Vulkan Drivers (ICDs)"
-    install_pkg "vulkan-tools" "Vulkan Tools & Loader"
-    
-    if [[ "$GPU_DRIVER" == "freedreno" ]]; then
-        install_pkg "mesa-vulkan-icd-freedreno" "Turnip Adreno Driver"
+    install_pkg "mesa-vulkan-drivers" "Vulkan ICDs"
+    # Termux bundles the Vulkan loader with mesa-vulkan-drivers now
+    if pkg search "^vulkan-tools$" 2>/dev/null | grep -q vulkan-tools; then
+        install_pkg "vulkan-tools" "Vulkan Tools (Loader+Validation)"
+    else
+        echo -e "${YELLOW}[!] vulkan-tools not found. Using Mesa-bundled loader.${NC}"
     fi
+    [[ "$GPU_DRIVER" == "freedreno" ]] && install_pkg "mesa-vulkan-icd-freedreno" "Turnip Driver"
 }
 
 step_audio() {
@@ -326,15 +328,22 @@ step_launchers() {
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Creating Startup/Stop Scripts...${NC}"
     mkdir -p ~/.config
 
-    # GPU/Env Config (Static)
+    # 🔥 FIX: Nuke lingering Plank/Cairo-Dock autostarts from previous runs
+    rm -f ~/.config/autostart/plank.desktop ~/.config/autostart/cairo-dock.desktop 2>/dev/null
+
+    # GPU/Env Config (Literal heredoc to prevent expansion bugs)
     cat > ~/.config/linux-gpu.sh << 'GPU_EOF'
 export XDG_RUNTIME_DIR="$PREFIX/tmp"
 export PULSE_RUNTIME_DIR="$PREFIX/tmp/pulse"
 export MESA_GL_VERSION_OVERRIDE=4.6
 export MESA_GLES_VERSION_OVERRIDE=3.2
 export GALLIUM_DRIVER=zink
+export MESA_LOADER_DRIVER_OVERRIDE=zink
+export LIBGL_ALWAYS_SOFTWARE=0
 export TU_DEBUG=noconform
 export MESA_VK_WSI_PRESENT_MODE=fifo
+export XDG_SESSION_TYPE=x11
+export XDG_SESSION_CLASS=user
 GPU_EOF
 
     if [ "$DE_CHOICE" == "4" ]; then
@@ -342,7 +351,7 @@ GPU_EOF
         echo 'export PLASMA_USE_QT_SCALING=1' >> ~/.config/linux-gpu.sh
     fi
 
-    # Generate DE-specific launcher
+    # DE commands
     case "$DE_CHOICE" in
         1) EXEC_CMD="exec startxfce4"; KILL_PAT="xfce4-session|xfdesktop" ;;
         2) EXEC_CMD="exec startlxqt"; KILL_PAT="lxqt-session|lxqt-panel" ;;
@@ -350,30 +359,31 @@ GPU_EOF
         4) EXEC_CMD="exec startplasma-x11"; KILL_PAT="startplasma-x11|kwin_x11|plasmashell" ;;
     esac
 
-    cat > ~/start-linux.sh << LAUNCHER_EOF
+    # 🔥 FIX: Quoted heredoc + explicit dbus startup + hard termux-x11 cleanup
+    cat > ~/start-linux.sh << 'LAUNCHER_EOF'
 #!/usr/bin/env bash
 echo "[*] Starting ${DE_NAME} on Android..."
 source ~/.config/linux-gpu.sh 2>/dev/null
 
 echo "[*] Cleaning old sessions..."
-pkill -TERM -f "termux.x11" 2>/dev/null || true
-pkill -TERM -f "${KILL_PAT}" 2>/dev/null || true
-pkill -TERM -f "pulseaudio|pipewire" 2>/dev/null || true
-sleep 1.5
-pkill -KILL -f "termux.x11" 2>/dev/null || true
-pkill -KILL -f "${KILL_PAT}" 2>/dev/null || true
-pkill -KILL -f "pulseaudio|pipewire" 2>/dev/null || true
+pkill -9 -f "termux.x11" 2>/dev/null || true
+pkill -9 -f "${KILL_PAT}" 2>/dev/null || true
+pkill -9 -f "pulseaudio|pipewire" 2>/dev/null || true
+sleep 2
 
-rm -rf "\$PULSE_RUNTIME_DIR" 2>/dev/null
-mkdir -p "\$PULSE_RUNTIME_DIR"
+rm -rf "$PULSE_RUNTIME_DIR" 2>/dev/null
+mkdir -p "$PULSE_RUNTIME_DIR" "$PREFIX/tmp/dbus" 2>/dev/null
+
+echo "[*] Starting D-Bus session daemon..."
+export $(dbus-daemon --session --fork --print-address 2>/dev/null)
 
 echo "[*] Starting audio server..."
 pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null
-export PULSE_SERVER="\$PULSE_RUNTIME_DIR/native"
+export PULSE_SERVER="$PULSE_RUNTIME_DIR/native"
 
 echo "[*] Launching Termux-X11..."
 termux-x11 :0 -legacy-input &
-sleep 3
+sleep 4
 export DISPLAY=:0
 
 echo "-----------------------------------------------"
@@ -383,13 +393,13 @@ ${EXEC_CMD}
 LAUNCHER_EOF
     chmod +x ~/start-linux.sh
 
-    # Stopper
-    cat > ~/stop-linux.sh << STOPPER_EOF
+    cat > ~/stop-linux.sh << 'STOPPER_EOF'
 #!/usr/bin/env bash
 echo "[*] Stopping ${DE_NAME}..."
-pkill -KILL -f "termux.x11" 2>/dev/null || true
-pkill -KILL -f "${KILL_PAT}" 2>/dev/null || true
-pkill -KILL -f "pulseaudio|pipewire" 2>/dev/null || true
+pkill -9 -f "termux.x11" 2>/dev/null || true
+pkill -9 -f "${KILL_PAT}" 2>/dev/null || true
+pkill -9 -f "pulseaudio|pipewire" 2>/dev/null || true
+pkill -9 -f "dbus-daemon" 2>/dev/null || true
 echo "[*] Desktop stopped."
 STOPPER_EOF
     chmod +x ~/stop-linux.sh
