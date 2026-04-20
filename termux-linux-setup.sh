@@ -325,78 +325,51 @@ step_launchers() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Creating Startup/Stop Scripts...${NC}"
     mkdir -p ~/.config
-    
-    # Modern Environment Variables (Android/Termux Optimized)
-    cat > ~/.config/linux-gpu.sh << EOF
-export XDG_RUNTIME_DIR="\${PREFIX}/tmp"
-export PULSE_RUNTIME_DIR="\${PREFIX}/tmp/pulse"
+
+    # GPU/Env Config (Static)
+    cat > ~/.config/linux-gpu.sh << 'GPU_EOF'
+export XDG_RUNTIME_DIR="$PREFIX/tmp"
+export PULSE_RUNTIME_DIR="$PREFIX/tmp/pulse"
 export MESA_GL_VERSION_OVERRIDE=4.6
 export MESA_GLES_VERSION_OVERRIDE=3.2
 export GALLIUM_DRIVER=zink
 export TU_DEBUG=noconform
 export MESA_VK_WSI_PRESENT_MODE=fifo
-EOF
+GPU_EOF
 
     if [ "$DE_CHOICE" == "4" ]; then
-        echo "export KWIN_USE_SW_COMPOSITION=0" >> ~/.config/linux-gpu.sh
-        echo "export PLASMA_USE_QT_SCALING=1" >> ~/.config/linux-gpu.sh
+        echo 'export KWIN_USE_SW_COMPOSITION=0' >> ~/.config/linux-gpu.sh
+        echo 'export PLASMA_USE_QT_SCALING=1' >> ~/.config/linux-gpu.sh
     fi
 
-    # =========================================================
-    # SECTION 5: DOCK AUTOSTART FIX (XFCE/MATE Only)
-    # =========================================================
-    DOCK_EXEC="cairo-dock"
-    DOCK_NAME="Cairo-Dock"
-    if ! command -v cairo-dock &>/dev/null; then
-        DOCK_EXEC="echo '[Dock skipped - not installed]'"
-        DOCK_NAME="None"
-    fi
-
-    if [[ "$DE_CHOICE" == "1" || "$DE_CHOICE" == "3" ]]; then
-        mkdir -p ~/.config/autostart
-        cat > ~/.config/autostart/dock.desktop << EOF
-[Desktop Entry]
-Type=Application
-Exec=${DOCK_EXEC}
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-Name=${DOCK_NAME}
-EOF
-    else
-        rm -f ~/.config/autostart/dock.desktop 2>/dev/null
-    fi
-    # =========================================================
-
-    # Determine execution commands and kill patterns
-    case $DE_CHOICE in
-        1) EXEC_CMD="exec startxfce4"; KILL_PAT="xfce4-session|plank|xfdesktop" ;;
+    # Generate DE-specific launcher
+    case "$DE_CHOICE" in
+        1) EXEC_CMD="exec startxfce4"; KILL_PAT="xfce4-session|xfdesktop" ;;
         2) EXEC_CMD="exec startlxqt"; KILL_PAT="lxqt-session|lxqt-panel" ;;
-        3) EXEC_CMD="exec mate-session"; KILL_PAT="mate-session|matedesktop|caja" ;;
+        3) EXEC_CMD="exec mate-session"; KILL_PAT="mate-session|matedesktop" ;;
         4) EXEC_CMD="exec startplasma-x11"; KILL_PAT="startplasma-x11|kwin_x11|plasmashell" ;;
     esac
 
-    # Main Launcher Script (Standalone - runs on Android later)
-    cat > ~/start-linux.sh << STARTEREOF
+    cat > ~/start-linux.sh << LAUNCHER_EOF
 #!/usr/bin/env bash
 echo "[*] Starting ${DE_NAME} on Android..."
 source ~/.config/linux-gpu.sh 2>/dev/null
 
 echo "[*] Cleaning old sessions..."
-# Graceful kill (TERM -> wait -> KILL)
-for pat in "termux.x11" "${KILL_PAT}" "pulseaudio|pipewire" "dbus"; do
-    pkill -TERM -f "\$pat" 2>/dev/null || true
-done
+pkill -TERM -f "termux.x11" 2>/dev/null || true
+pkill -TERM -f "${KILL_PAT}" 2>/dev/null || true
+pkill -TERM -f "pulseaudio|pipewire" 2>/dev/null || true
 sleep 1.5
-for pat in "termux.x11" "${KILL_PAT}" "pulseaudio|pipewire" "dbus"; do
-    pkill -KILL -f "\$pat" 2>/dev/null || true
-done
-rm -rf "\${PULSE_RUNTIME_DIR}" 2>/dev/null
-mkdir -p "\${PULSE_RUNTIME_DIR}"
+pkill -KILL -f "termux.x11" 2>/dev/null || true
+pkill -KILL -f "${KILL_PAT}" 2>/dev/null || true
+pkill -KILL -f "pulseaudio|pipewire" 2>/dev/null || true
+
+rm -rf "\$PULSE_RUNTIME_DIR" 2>/dev/null
+mkdir -p "\$PULSE_RUNTIME_DIR"
 
 echo "[*] Starting audio server..."
 pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null
-export PULSE_SERVER="\${PULSE_RUNTIME_DIR}/native"
+export PULSE_SERVER="\$PULSE_RUNTIME_DIR/native"
 
 echo "[*] Launching Termux-X11..."
 termux-x11 :0 -legacy-input &
@@ -407,18 +380,18 @@ echo "-----------------------------------------------"
 echo "  [*] Open Termux-X11 app to view desktop!"
 echo "-----------------------------------------------"
 ${EXEC_CMD}
-STARTEREOF
+LAUNCHER_EOF
     chmod +x ~/start-linux.sh
 
-    # Stopper Script
-    cat > ~/stop-linux.sh << STOPEOF
+    # Stopper
+    cat > ~/stop-linux.sh << STOPPER_EOF
 #!/usr/bin/env bash
 echo "[*] Stopping ${DE_NAME}..."
-for pat in "termux.x11" "pulseaudio|pipewire" "${KILL_PAT}" "dbus"; do
-    pkill -KILL -f "\$pat" 2>/dev/null || true
-done
+pkill -KILL -f "termux.x11" 2>/dev/null || true
+pkill -KILL -f "${KILL_PAT}" 2>/dev/null || true
+pkill -KILL -f "pulseaudio|pipewire" 2>/dev/null || true
 echo "[*] Desktop stopped."
-STOPEOF
+STOPPER_EOF
     chmod +x ~/stop-linux.sh
     echo -e "  [+] Created ~/start-linux.sh & ~/stop-linux.sh"
 }
