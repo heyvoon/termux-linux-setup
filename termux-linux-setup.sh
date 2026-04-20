@@ -239,33 +239,6 @@ step_desktop() {
             ;;
     esac
 }
-    
-    case $DE_CHOICE in
-        1)
-            install_pkg "xfce4" "XFCE4"
-            install_pkg "xfce4-terminal" "XFCE4 Terminal"
-            install_pkg "xfce4-whiskermenu-plugin" "Whisker Menu"
-            install_pkg "plank" "Plank Dock"
-            install_pkg "thunar" "Thunar"
-            ;;
-        2)
-            install_pkg "lxqt" "LXQt"
-            install_pkg "qterminal" "QTerminal"
-            install_pkg "pcmanfm-qt" "PCManFM-Qt"
-            ;;
-        3)
-            install_pkg "mate" "MATE"
-            install_pkg "mate-tweak" "MATE Tweak"
-            install_pkg "plank" "Plank Dock"
-            install_pkg "mate-terminal" "MATE Terminal"
-            ;;
-        4)
-            install_pkg "plasma-desktop" "KDE Plasma"
-            install_pkg "konsole" "Konsole"
-            install_pkg "dolphin" "Dolphin"
-            ;;
-    esac
-}
 
 step_gpu() {
     $SKIP_GPU && return 0
