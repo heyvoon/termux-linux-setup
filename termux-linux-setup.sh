@@ -391,10 +391,11 @@ step_remote() {
     # Create VNC startup configuration (DE-agnostic)
     mkdir -p ~/.vnc
 
-    # Determine the correct DE start command
+    # Determine the correct DE start command (use session binary, NOT wrapper scripts
+    # that try to launch their own X server — Termux-X11 already provides :0)
     case "$DE_CHOICE" in
-        1) DE_START_CMD="startxfce4" ;;
-        2) DE_START_CMD="startlxqt" ;;
+        1) DE_START_CMD="xfce4-session" ;;
+        2) DE_START_CMD="lxqt-session" ;;
         3) DE_START_CMD="mate-session" ;;
         4) DE_START_CMD="startplasma-x11" ;;
     esac
@@ -467,8 +468,8 @@ GPU_EOF
 
     # DE commands
     case "$DE_CHOICE" in
-        1) EXEC_CMD="exec startxfce4"; KILL_PAT="xfce4-session|xfdesktop|xfwm4" ;;
-        2) EXEC_CMD="exec startlxqt"; KILL_PAT="lxqt-session|lxqt-panel|openbox" ;;
+        1) EXEC_CMD="exec xfce4-session"; KILL_PAT="xfce4-session|xfdesktop|xfwm4" ;;
+        2) EXEC_CMD="exec lxqt-session"; KILL_PAT="lxqt-session|lxqt-panel|openbox" ;;
         3) EXEC_CMD="exec mate-session"; KILL_PAT="mate-session|mate-panel|marco" ;;
         4) EXEC_CMD="exec startplasma-x11"; KILL_PAT="startplasma-x11|kwin_x11|plasmashell" ;;
     esac
@@ -481,12 +482,14 @@ GPU_EOF
     # Variables like $HOME, $PREFIX, $PULSE_RUNTIME_DIR expand at RUNTIME not GENERATION time
     cat > ~/start-linux.sh << STARTER_EOF
 #!/usr/bin/env bash
-set -e
 
 echo "[*] Starting ${DE_NAME} on Android..."
 
 # Source GPU/env config
 source ~/.config/linux-gpu.sh 2>/dev/null || true
+
+# Suppress harmless Mesa driver probe errors
+export LIBGL_DEBUG=quiet
 
 # Ensure runtime directories exist
 mkdir -p "\$XDG_RUNTIME_DIR" "\$PULSE_RUNTIME_DIR" "\$PREFIX/tmp/dbus"
@@ -558,6 +561,19 @@ else
     echo "[*] VNC already running."
 fi
 
+# --- VNC Password Warning ---
+if [ ! -f ~/.vnc/passwd ]; then
+    echo ""
+    echo "==============================================================="
+    echo "  [!] VNC PASSWORD NOT SET!"
+    echo "  VNC connections will be REJECTED until you set a password."
+    echo "  Run this command in Termux:"
+    echo "    vncpasswd"
+    echo "  Then restart with: bash ~/start-linux.sh"
+    echo "==============================================================="
+    echo ""
+fi
+
 # --- Start PulseAudio ---
 echo "[*] Starting audio server..."
 pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null && echo "[+] PulseAudio started." || echo "[!] PulseAudio failed or already running."
@@ -578,15 +594,34 @@ fi
 
 export DISPLAY=:0
 
+# --- Start dbus session daemon (required before DE) ---
+echo "[*] Starting D-Bus session bus..."
+eval \$(dbus-daemon --session --fork --print-address 2>/dev/null) || echo "[!] D-Bus failed, continuing anyway..."
+
+# --- Disable XFCE services that conflict with Android ---
+xfconf-query -c xfce4-session -p /startup/ssh-agent/enabled -n -t bool -s false 2>/dev/null || true
+xfconf-query -c xfce4-session -p /startup/gpg-agent/enabled -n -t bool -s false 2>/dev/null || true
+
+# Disable xfce4-power-manager (no UPower on Android — causes DPMS warnings)
+if [ "\$DE_CHOICE" = "1" ]; then
+    mkdir -p ~/.config/autostart
+    cat > ~/.config/autostart/xfce4-power-manager.desktop << 'XPM_EOF'
+[Desktop Entry]
+Type=Application
+Name=XFCE Power Manager
+NoDisplay=true
+Hidden=true
+X-GNOME-Autostart-enabled=false
+XPM_EOF
+    # Kill if already running from a previous session
+    pkill -TERM -f "xfce4-power-manager" 2>/dev/null || true
+fi
+
 echo "---------------------------------------------------------------"
 echo "  [*] Open Termux-X11 app for local display!"
 echo "  [*] Connect via VNC to <IP>:5901 for remote!"
 echo "  [*] SSH via: ssh \$USER@<IP> -p 8022"
 echo "---------------------------------------------------------------"
-
-# Disable XFCE services that conflict with Android
-xfconf-query -c xfce4-session -p /startup/ssh-agent/enabled -n -t bool -s false 2>/dev/null || true
-xfconf-query -c xfce4-session -p /startup/gpg-agent/enabled -n -t bool -s false 2>/dev/null || true
 
 # --- Start Desktop Environment ---
 echo "[*] Starting ${DE_NAME}..."
