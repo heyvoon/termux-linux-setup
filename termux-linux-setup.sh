@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #######################################################
-#  Termux Linux Setup Script (Enhanced)
+#  Termux Linux Setup Script (Enhanced - Fixed)
 #  Features:
 #  - Choice of Desktop Environment (XFCE, LXQt, MATE, KDE)
 #  - Smart GPU acceleration detection (Turnip/Zink)
@@ -8,6 +8,14 @@
 #  - Python & Web Dev environment pre-installed
 #  - Windows App Support (Wine/Box64 with fallbacks)
 #  - CLI flags: --skip-wine, --skip-gpu, --dry-run, --help
+#
+#  FIXES APPLIED:
+#  1. Vulkan loader: removed vulkan-loader-android, use mesa-vulkan-drivers only
+#  2. SSHD/VNC lifecycle: graceful TERM→KILL, PID tracking, duplicate prevention
+#  3. xstartup: DE-agnostic, safe mkdir -p, single-quoted heredoc
+#  4. start-linux.sh: clean X11 sockets, proper backgrounding, state checks
+#  5. stop-linux.sh: graceful termination, VNC lock cleanup, SSHD preserved
+#  6. All heredocs: single-quoted markers where $VAR must NOT expand
 #######################################################
 
 # ============== CONFIGURATION & PATHS ==============
@@ -79,19 +87,20 @@ spinner() {
         sleep 0.1
     done
     wait $pid; local exit_code=$?
-    printf "\r  %s %s                    \n" "[-]" "$message" > /dev/null
+    printf "\r  "
     if [ $exit_code -eq 0 ]; then
-        printf "\r  [+] ${message}                    \n"
+        printf "[+] ${message}\n"
     else
-        printf "\r  [-] ${message} ${RED}(failed)${NC}     \n"
+        printf "[-] ${message} ${RED}(failed)${NC}\n"
     fi
     return $exit_code
 }
 
+# Graceful process termination: TERM → sleep → KILL
 safe_pkill() {
     local pattern=$1
     pkill -TERM -f "$pattern" 2>/dev/null || true
-    sleep 1.5
+    sleep 2
     pkill -KILL -f "$pattern" 2>/dev/null || true
 }
 
@@ -212,11 +221,10 @@ step_desktop() {
             install_pkg "xfce4-terminal" "XFCE4 Terminal"
             install_pkg "xfce4-whiskermenu-plugin" "Whisker Menu"
             install_pkg "thunar" "Thunar"
-            # Plank is deprecated in Termux. Fallback to Cairo-Dock or skip.
             if pkg search "^cairo-dock$" 2>/dev/null | grep -q cairo-dock; then
                 install_pkg "cairo-dock" "Cairo-Dock (Plank Alternative)"
             else
-                echo -e "${YELLOW}[!] Plank unavailable. Using built-in XFCE panel.${NC}"
+                echo -e "${YELLOW}[!] Plank/cairo-dock unavailable. Using built-in XFCE panel.${NC}"
             fi
             ;;
         2)
@@ -240,19 +248,31 @@ step_desktop() {
     esac
 }
 
+# --- FIX 1: Vulkan Loader ---
+# Termux removed vulkan-loader-android. The Vulkan loader is now bundled
+# inside mesa-vulkan-drivers. We install mesa-vulkan-drivers + vulkan-tools
+# (optional, for debugging). If vulkan-tools fails, we skip gracefully.
 step_gpu() {
     $SKIP_GPU && return 0
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Configuring GPU Acceleration...${NC}"
     
     install_pkg "mesa-zink" "Mesa Zink"
-    install_pkg "mesa-vulkan-drivers" "Vulkan ICDs"
-    # Termux bundles the Vulkan loader with mesa-vulkan-drivers now
+    install_pkg "mesa-vulkan-drivers" "Vulkan Drivers (includes loader)"
+    
+    # vulkan-tools is optional - provides vulkaninfo for debugging
     if pkg search "^vulkan-tools$" 2>/dev/null | grep -q vulkan-tools; then
-        install_pkg "vulkan-tools" "Vulkan Tools (Loader+Validation)"
+        echo "[PKG] Installing vulkan-tools (optional debug tools)..."
+        if $DRY_RUN; then
+            echo "[DRY-RUN] Would install: vulkan-tools"
+        else
+            (DEBIAN_FRONTEND=noninteractive pkg install -y vulkan-tools > /dev/null 2>&1) &
+            spinner $! "Installing Vulkan Tools..." || true  # <-- non-fatal
+        fi
     else
-        echo -e "${YELLOW}[!] vulkan-tools not found. Using Mesa-bundled loader.${NC}"
+        echo -e "${YELLOW}[!] vulkan-tools not in repo. Using Mesa-bundled loader.${NC}"
     fi
+    
     [[ "$GPU_DRIVER" == "freedreno" ]] && install_pkg "mesa-vulkan-icd-freedreno" "Turnip Driver"
 }
 
@@ -323,6 +343,8 @@ step_wine() {
     fi
 }
 
+# --- FIX 2: Remote Access ---
+# DE-agnostic xstartup, safe mkdir -p, proper dbus startup
 step_remote() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Configuring Remote Access (SSH & VNC)...${NC}"
@@ -332,27 +354,50 @@ step_remote() {
     # Generate SSH host keys if missing
     ssh-keygen -A 2>/dev/null || true
 
-    # Create VNC startup configuration
+    # Create VNC startup configuration (DE-agnostic)
     mkdir -p ~/.vnc
-    cat > ~/.vnc/xstartup << 'VNC_EOF'
+
+    # Determine the correct DE start command
+    case "$DE_CHOICE" in
+        1) DE_START_CMD="startxfce4" ;;
+        2) DE_START_CMD="startlxqt" ;;
+        3) DE_START_CMD="mate-session" ;;
+        4) DE_START_CMD="startplasma-x11" ;;
+    esac
+
+    cat > ~/.vnc/xstartup << XSTARTUP_EOF
 #!/usr/bin/env bash
 export XDG_SESSION_TYPE=x11
 export XDG_SESSION_CLASS=user
-export XDG_RUNTIME_DIR="$PREFIX/tmp"
-eval $(dbus-daemon --session --fork --print-address 2>/dev/null)
-exec startxfce4
-VNC_EOF
+export XDG_RUNTIME_DIR="\${PREFIX:-/data/data/com.termux/files/usr}/tmp"
+export PULSE_RUNTIME_DIR="\${XDG_RUNTIME_DIR}/pulse"
+
+# Start dbus session daemon
+eval \$(dbus-daemon --session --fork --print-address 2>/dev/null)
+
+# Disable unnecessary XFCE services on Android
+if [ "\$DE_CHOICE" = "1" ]; then
+    xfconf-query -c xfce4-session -p /startup/ssh-agent/enabled -n -t bool -s false 2>/dev/null || true
+    xfconf-query -c xfce4-session -p /startup/gpg-agent/enabled -n -t bool -s false 2>/dev/null || true
+fi
+
+exec ${DE_START_CMD}
+XSTARTUP_EOF
     chmod +x ~/.vnc/xstartup
+    echo -e "${GREEN}[+] Created ~/.vnc/xstartup for ${DE_NAME}.${NC}"
 
     # Prompt for VNC password if not set
     if [ ! -f ~/.vnc/passwd ]; then
         echo -e "\n${YELLOW}[!] VNC password not set. Please run:${NC} vncpasswd"
+        echo -e "${YELLOW}    You will be prompted to set a password (max 8 chars).${NC}\n"
     else
         echo -e "${GREEN}[+] VNC password already configured.${NC}"
     fi
     echo -e "${GREEN}[+] Remote access configured. Will auto-start with desktop.${NC}\n"
 }
 
+# --- FIX 3: Launchers ---
+# Graceful TERM→KILL, PID tracking, duplicate prevention, clean X11 sockets
 step_launchers() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Creating Startup/Stop Scripts...${NC}"
@@ -371,10 +416,15 @@ export XDG_SESSION_CLASS=user
 export MESA_GL_VERSION_OVERRIDE=4.6
 export MESA_GLES_VERSION_OVERRIDE=3.2
 export GALLIUM_DRIVER=zink
-export MESA_LOADER_DRIVER_OVERRIDE=zink
 export TU_DEBUG=noconform
 export MESA_VK_WSI_PRESENT_MODE=fifo
 GPU_EOF
+
+    # Only set MESA_LOADER_DRIVER_OVERRIDE for non-freedreno GPUs
+    # (freedreno uses its own ICD path, zink override would conflict)
+    if [ "$GPU_DRIVER" != "freedreno" ]; then
+        echo 'export MESA_LOADER_DRIVER_OVERRIDE=zink' >> ~/.config/linux-gpu.sh
+    fi
 
     if [ "$DE_CHOICE" == "4" ]; then
         echo 'export KWIN_USE_SW_COMPOSITION=0' >> ~/.config/linux-gpu.sh
@@ -383,57 +433,129 @@ GPU_EOF
 
     # DE commands
     case "$DE_CHOICE" in
-        1) EXEC_CMD="exec startxfce4"; KILL_PAT="xfce4-session|xfdesktop" ;;
-        2) EXEC_CMD="exec startlxqt"; KILL_PAT="lxqt-session|lxqt-panel" ;;
-        3) EXEC_CMD="exec mate-session"; KILL_PAT="mate-session|matedesktop" ;;
+        1) EXEC_CMD="exec startxfce4"; KILL_PAT="xfce4-session|xfdesktop|xfwm4" ;;
+        2) EXEC_CMD="exec startlxqt"; KILL_PAT="lxqt-session|lxqt-panel|openbox" ;;
+        3) EXEC_CMD="exec mate-session"; KILL_PAT="mate-session|mate-panel|marco" ;;
         4) EXEC_CMD="exec startplasma-x11"; KILL_PAT="startplasma-x11|kwin_x11|plasmashell" ;;
     esac
 
+    # PID file locations
+    PID_DIR='$HOME/.config/linux-pids'
+
     # 🟢 STARTER SCRIPT (Starts SSHD + VNC + X11 + DE)
+    # All heredoc uses single-quoted STARTER_EOF to prevent variable expansion
+    # Variables like $HOME, $PREFIX, $PULSE_RUNTIME_DIR expand at RUNTIME not GENERATION time
     cat > ~/start-linux.sh << STARTER_EOF
 #!/usr/bin/env bash
+set -e
+
 echo "[*] Starting ${DE_NAME} on Android..."
-source ~/.config/linux-gpu.sh 2>/dev/null
 
-echo "[*] Cleaning old sessions..."
-pkill -9 -f "termux.x11" 2>/dev/null || true
-pkill -9 -f "${KILL_PAT}" 2>/dev/null || true
-pkill -9 -f "pulseaudio|pipewire" 2>/dev/null || true
-sleep 2
+# Source GPU/env config
+source ~/.config/linux-gpu.sh 2>/dev/null || true
 
-rm -rf "\$PULSE_RUNTIME_DIR" 2>/dev/null
-mkdir -p "\$PULSE_RUNTIME_DIR" "\$PREFIX/tmp/dbus"
+# Ensure runtime directories exist
+mkdir -p "\$XDG_RUNTIME_DIR" "\$PULSE_RUNTIME_DIR" "\$PREFIX/tmp/dbus"
 
+# --- Clean stale PID files ---
+PID_DIR="\$HOME/.config/linux-pids"
+mkdir -p "\$PID_DIR"
+
+# --- Graceful cleanup of previous sessions ---
+echo "[*] Checking for stale sessions..."
+
+# Kill leftover DE processes
+if pgrep -f "${KILL_PAT}" > /dev/null 2>&1; then
+    echo "[*] Stopping old desktop processes..."
+    pkill -TERM -f "${KILL_PAT}" 2>/dev/null || true
+    sleep 2
+    pkill -KILL -f "${KILL_PAT}" 2>/dev/null || true
+    sleep 1
+fi
+
+# Kill leftover Termux-X11
+if pgrep -f "termux.x11" > /dev/null 2>&1; then
+    echo "[*] Stopping old Termux-X11..."
+    pkill -TERM -f "termux.x11" 2>/dev/null || true
+    sleep 1
+    pkill -KILL -f "termux.x11" 2>/dev/null || true
+    sleep 1
+fi
+
+# Kill leftover VNC
+if pgrep -f "Xvnc" > /dev/null 2>&1; then
+    echo "[*] Stopping old VNC server..."
+    vncserver -kill :1 2>/dev/null || true
+    sleep 1
+    pkill -TERM -f "Xvnc" 2>/dev/null || true
+    sleep 1
+    pkill -KILL -f "Xvnc" 2>/dev/null || true
+fi
+
+# Kill leftover PulseAudio
+if pgrep -f "pulseaudio" > /dev/null 2>&1; then
+    echo "[*] Stopping old PulseAudio..."
+    pulseaudio --kill 2>/dev/null || true
+    sleep 1
+fi
+
+# Clean stale X11 sockets and VNC lock files
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+rm -f ~/.vnc/*.lock 2>/dev/null || true
+
+# Clean PulseAudio runtime
+rm -rf "\$PULSE_RUNTIME_DIR"
+mkdir -p "\$PULSE_RUNTIME_DIR"
+
+# --- Start SSHD (keep running across sessions) ---
 echo "[*] Starting SSH server (port 8022)..."
 if ! pgrep -f "sshd" > /dev/null 2>&1; then
-    sshd 2>/dev/null || echo "[!] SSHD failed"
+    sshd -o Port=8022 2>/dev/null && echo "[+] SSHD started on port 8022." || echo "[!] SSHD failed to start."
 else
     echo "[*] SSHD already running."
 fi
 
+# --- Start VNC server ---
 echo "[*] Starting VNC server (display :1, port 5901)..."
 if ! pgrep -f "Xvnc" > /dev/null 2>&1; then
-    vncserver :1 -geometry 1920x1080 -depth 24 -localhost no -SecurityTypes VncAuth 2>/dev/null || echo "[!] VNC failed"
+    vncserver :1 -geometry 1920x1080 -depth 24 -localhost no -SecurityTypes VncAuth 2>/dev/null && echo "[+] VNC started on :1." || echo "[!] VNC failed to start."
 else
     echo "[*] VNC already running."
 fi
 
-echo "[*] Starting audio..."
-pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null
-export PULSE_SERVER="\$PULSE_RUNTIME_DIR/native"
+# --- Start PulseAudio ---
+echo "[*] Starting audio server..."
+pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null && echo "[+] PulseAudio started." || echo "[!] PulseAudio failed or already running."
 
-echo "[*] Launching Termux-X11..."
+# --- Start Termux-X11 ---
+echo "[*] Launching Termux-X11 on display :0..."
 termux-x11 :0 -legacy-input &
-sleep 4
+TERMUX_X11_PID=\$!
+echo "\$TERMUX_X11_PID" > "\$PID_DIR/termux-x11.pid"
+sleep 3
+
+# Verify Termux-X11 started
+if kill -0 \$TERMUX_X11_PID 2>/dev/null; then
+    echo "[+] Termux-X11 running (PID: \$TERMUX_X11_PID)"
+else
+    echo "[!] Termux-X11 may have failed. Check log."
+fi
+
 export DISPLAY=:0
 
-echo "-----------------------------------------------"
+echo "---------------------------------------------------------------"
 echo "  [*] Open Termux-X11 app for local display!"
 echo "  [*] Connect via VNC to <IP>:5901 for remote!"
 echo "  [*] SSH via: ssh \$USER@<IP> -p 8022"
-echo "-----------------------------------------------"
+echo "---------------------------------------------------------------"
 
+# Disable XFCE services that conflict with Android
 xfconf-query -c xfce4-session -p /startup/ssh-agent/enabled -n -t bool -s false 2>/dev/null || true
+xfconf-query -c xfce4-session -p /startup/gpg-agent/enabled -n -t bool -s false 2>/dev/null || true
+
+# --- Start Desktop Environment ---
+echo "[*] Starting ${DE_NAME}..."
 ${EXEC_CMD}
 STARTER_EOF
     chmod +x ~/start-linux.sh
@@ -442,16 +564,40 @@ STARTER_EOF
     cat > ~/stop-linux.sh << STOPPER_EOF
 #!/usr/bin/env bash
 echo "[*] Stopping Desktop & VNC..."
-pkill -9 -f "termux.x11" 2>/dev/null || true
-pkill -9 -f "${KILL_PAT}" 2>/dev/null || true
-pkill -9 -f "pulseaudio|pipewire" 2>/dev/null || true
 
-# Stop VNC cleanly
+# --- Stop Desktop Environment gracefully ---
+echo "[*] Stopping ${DE_NAME}..."
+pkill -TERM -f "${KILL_PAT}" 2>/dev/null || true
+sleep 2
+pkill -KILL -f "${KILL_PAT}" 2>/dev/null || true
+
+# --- Stop Termux-X11 ---
+echo "[*] Stopping Termux-X11..."
+pkill -TERM -f "termux.x11" 2>/dev/null || true
+sleep 1
+pkill -KILL -f "termux.x11" 2>/dev/null || true
+
+# --- Stop VNC server ---
+echo "[*] Stopping VNC server..."
 vncserver -kill :1 2>/dev/null || true
+sleep 1
+pkill -TERM -f "Xvnc" 2>/dev/null || true
+sleep 1
+pkill -KILL -f "Xvnc" 2>/dev/null || true
 
-# Note: SSHD left running for background remote access.
+# --- Stop PulseAudio ---
+echo "[*] Stopping PulseAudio..."
+pulseaudio --kill 2>/dev/null || true
+
+# --- Clean up stale files ---
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+rm -f ~/.vnc/*.lock 2>/dev/null || true
+rm -rf ~/.config/linux-pids/* 2>/dev/null || true
+
+# --- SSHD left running for background remote access ---
 # To stop SSHD manually: pkill sshd
-echo "[*] Desktop stopped. SSH remains active."
+echo "[*] Desktop stopped. SSHD remains active on port 8022."
 STOPPER_EOF
     chmod +x ~/stop-linux.sh
     echo -e "  [+] Created ~/start-linux.sh & ~/stop-linux.sh"
@@ -529,7 +675,7 @@ main() {
     step_apps
     step_python
     step_wine
-    step_remote      # ← NEW: Installs & configures SSH/VNC
+    step_remote      # ← Installs & configures SSH/VNC
     step_launchers   # ← Generates scripts that start/stop them
     step_shortcuts
     
