@@ -537,6 +537,42 @@ else
     echo "[*] SSHD already running."
 fi
 
+# --- Start Termux-X11 FIRST (must exist before x11vnc can mirror it) ---
+echo "[*] Launching Termux-X11 on display :0..."
+termux-x11 :0 &
+TERMUX_X11_PID=$!
+echo "$TERMUX_X11_PID" > "$PID_DIR/termux-x11.pid"
+sleep 3
+
+# Verify Termux-X11 started
+if kill -0 $TERMUX_X11_PID 2>/dev/null; then
+    echo "[+] Termux-X11 running (PID: $TERMUX_X11_PID)"
+else
+    echo "[!] Termux-X11 may have failed. Check log."
+fi
+
+export DISPLAY=:0
+
+# --- Wait for X11 display :0 to be ready ---
+echo "[*] Waiting for display :0 to be ready..."
+DISPLAY_READY=false
+for i in $(seq 1 10); do
+    if xdpyinfo -display :0 >/dev/null 2>&1; then
+        echo "[+] Display :0 is ready."
+        DISPLAY_READY=true
+        break
+    fi
+    echo "  [*] Waiting... ($i/10)"
+    sleep 1
+done
+if [ "$DISPLAY_READY" != "true" ]; then
+    echo "[!] Display :0 not ready after 10s. Continuing anyway..."
+fi
+
+# --- Start PulseAudio ---
+echo "[*] Starting audio server..."
+pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null && echo "[+] PulseAudio started." || echo "[!] PulseAudio failed or already running."
+
 # --- Start VNC server (mirrors display :0 — same as Termux-X11) ---
 echo "[*] Starting VNC server (mirroring display :0, port 5901)..."
 if [ ! -f ~/.vnc/passwd ]; then
@@ -565,26 +601,6 @@ else
     echo "[*] VNC already running."
     VNC_STARTED=true
 fi
-
-# --- Start PulseAudio ---
-echo "[*] Starting audio server..."
-pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null && echo "[+] PulseAudio started." || echo "[!] PulseAudio failed or already running."
-
-# --- Start Termux-X11 ---
-echo "[*] Launching Termux-X11 on display :0..."
-termux-x11 :0 &
-TERMUX_X11_PID=$!
-echo "$TERMUX_X11_PID" > "$PID_DIR/termux-x11.pid"
-sleep 3
-
-# Verify Termux-X11 started
-if kill -0 $TERMUX_X11_PID 2>/dev/null; then
-    echo "[+] Termux-X11 running (PID: $TERMUX_X11_PID)"
-else
-    echo "[!] Termux-X11 may have failed. Check log."
-fi
-
-export DISPLAY=:0
 
 # --- Start dbus session daemon (required before DE) ---
 echo "[*] Starting D-Bus session bus..."
