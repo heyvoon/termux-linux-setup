@@ -592,38 +592,7 @@ else
     echo "[*] VNC already running."
     VNC_STARTED=true
 fi
-else
-    echo "[*] VNC already running."
-    VNC_STARTED=true
-fi
-else
-    echo "[*] VNC already running."
-    VNC_STARTED=true
-fi
-else
-    echo "[*] VNC already running."
-    VNC_STARTED=true
-fi
-else
-    echo "[*] VNC already running."
-    VNC_STARTED=true
-fi
-else
-    echo "[*] VNC already running."
-    VNC_STARTED=true
-fi
-else
-    echo "[*] VNC already running."
-    VNC_STARTED=true
-fi
-else
-    echo "[*] VNC already running."
-    VNC_STARTED=true
-fi
-else
-    echo "[*] VNC already running."
-    VNC_STARTED=true
-fi
+
 
 # --- Start PulseAudio ---
 echo "[*] Starting audio server..."
