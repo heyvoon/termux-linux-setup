@@ -209,8 +209,6 @@ step_x11() {
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing Termux-X11 Display Server...${NC}"
     install_pkg "termux-x11-nightly" "Termux-X11"
     install_pkg "xorg-xrandr" "XRandR"
-    install_pkg "xorg-x11-utils" "X11 Utils (xdpyinfo)"
-    install_pkg "xorg-x11-utils" "X11 Utils (xdpyinfo)"
 }
 
 step_desktop() {
@@ -559,17 +557,11 @@ export DISPLAY=:0
 echo "[*] Waiting for display :0 to be ready..."
 DISPLAY_READY=false
 for i in $(seq 1 10); do
-    if xdpyinfo -display :0 >/dev/null 2>&1 || xrandr -display :0 >/dev/null 2>&1; then
+    if xrandr -display :0 >/dev/null 2>&1; then
         echo "[+] Display :0 is ready."
         DISPLAY_READY=true
         break
     fi
-    echo "  [*] Waiting... ($i/10)"
-    sleep 1
-done
-if [ "$DISPLAY_READY" != "true" ]; then
-    echo "[!] Display :0 not ready after 10s. Continuing anyway..."
-fi
     echo "  [*] Waiting... ($i/10)"
     sleep 1
 done
