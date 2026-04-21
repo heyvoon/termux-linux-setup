@@ -140,7 +140,7 @@ This isn't a generic script — it's been battle-tested and refined specifically
 |-------------|---------|
 | ✅ `XDG_RUNTIME_DIR` & `PULSE_RUNTIME_DIR` set to `$PREFIX/tmp` | Fixes PulseAudio/D-Bus failures on Android's restricted filesystem |
 | ✅ `MESA_LOADER_DRIVER_OVERRIDE=zink` + `LIBGL_ALWAYS_SOFTWARE=0` | Forces hardware acceleration path; prevents silent fallback to `swrast` |
-| ✅ `termux-x11 :0 -legacy-input` flag | Enables proper touch/mouse handling on Android 10+ |
+| ✅ `termux-x11 :0` (no legacy flag) | Compatible with Termux-X11 nightly builds; clean input handling |
 | ✅ Explicit `dbus-daemon --session` startup | Resolves `Failed to get system bus` warnings in XFCE/MATE |
 | ✅ `XDG_SESSION_TYPE=x11` + `XDG_SESSION_CLASS=user` | Silences ConsoleKit/UPower warnings (Android handles power natively) |
 | ✅ Session cache cleanup (`~/.cache/sessions/*`) | Prevents Plank/old configs from auto-spawning on restart |

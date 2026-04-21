@@ -564,7 +564,7 @@ pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null && echo "[+] 
 
 # --- Start Termux-X11 ---
 echo "[*] Launching Termux-X11 on display :0..."
-termux-x11 :0 -legacy-input &
+termux-x11 :0 &
 TERMUX_X11_PID=\$!
 echo "\$TERMUX_X11_PID" > "\$PID_DIR/termux-x11.pid"
 sleep 3
