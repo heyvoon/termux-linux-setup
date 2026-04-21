@@ -249,31 +249,65 @@ step_desktop() {
 }
 
 # --- FIX 1: Vulkan Loader ---
-# Termux removed vulkan-loader-android. The Vulkan loader is now bundled
-# inside mesa-vulkan-drivers. We install mesa-vulkan-drivers + vulkan-tools
-# (optional, for debugging). If vulkan-tools fails, we skip gracefully.
+# Termux has been restructuring Vulkan packages. vulkan-loader-android was
+# removed. mesa-vulkan-drivers may also be unavailable on some repos/archs.
+# Strategy: try multiple package names, gracefully skip if all fail.
+# mesa-zink is the critical package (OpenGL→Vulkan translation layer).
+# Vulkan ICDs are optional — zink can still work with software Vulkan.
 step_gpu() {
     $SKIP_GPU && return 0
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Configuring GPU Acceleration...${NC}"
     
+    # Core: Mesa Zink (OpenGL over Vulkan — required for GPU acceleration)
     install_pkg "mesa-zink" "Mesa Zink"
-    install_pkg "mesa-vulkan-drivers" "Vulkan Drivers (includes loader)"
     
-    # vulkan-tools is optional - provides vulkaninfo for debugging
+    # Optional: Vulkan drivers/ICDs — try multiple names, all non-fatal
+    VULKAN_PKG_INSTALLED=false
+    for pkg_name in "mesa-vulkan-drivers" "vulkan-loader-android" "vulkan-icd-freedreno" "mesa-vulkan-icd-freedreno"; do
+        if pkg search "^${pkg_name}$" 2>/dev/null | grep -q "^${pkg_name}$"; then
+            echo "[PKG] Installing ${pkg_name}..."
+            if $DRY_RUN; then
+                echo "[DRY-RUN] Would install: ${pkg_name}"
+            else
+                (DEBIAN_FRONTEND=noninteractive pkg install -y "$pkg_name" > /dev/null 2>&1) &
+                if spinner $! "Installing ${pkg_name}..."; then
+                    VULKAN_PKG_INSTALLED=true
+                    echo -e "${GREEN}[+] ${pkg_name} installed successfully.${NC}"
+                else
+                    echo -e "${YELLOW}[!] ${pkg_name} install failed. Trying next...${NC}"
+                fi
+            fi
+            break
+        fi
+    done
+    
+    if ! $VULKAN_PKG_INSTALLED; then
+        echo -e "${YELLOW}[!] No Vulkan driver package found in repos.${NC}"
+        echo -e "${YELLOW}    GPU acceleration will use Zink with software Vulkan fallback.${NC}"
+        echo -e "${YELLOW}    This is normal on newer Termux installations.${NC}"
+    fi
+    
+    # Optional: vulkan-tools (provides vulkaninfo for debugging)
     if pkg search "^vulkan-tools$" 2>/dev/null | grep -q vulkan-tools; then
         echo "[PKG] Installing vulkan-tools (optional debug tools)..."
         if $DRY_RUN; then
             echo "[DRY-RUN] Would install: vulkan-tools"
         else
             (DEBIAN_FRONTEND=noninteractive pkg install -y vulkan-tools > /dev/null 2>&1) &
-            spinner $! "Installing Vulkan Tools..." || true  # <-- non-fatal
+            spinner $! "Installing Vulkan Tools..." || true  # non-fatal
         fi
-    else
-        echo -e "${YELLOW}[!] vulkan-tools not in repo. Using Mesa-bundled loader.${NC}"
     fi
     
-    [[ "$GPU_DRIVER" == "freedreno" ]] && install_pkg "mesa-vulkan-icd-freedreno" "Turnip Driver"
+    # Freedreno/Turnip driver for Adreno GPUs
+    if [[ "$GPU_DRIVER" == "freedreno" ]]; then
+        for turnip_pkg in "mesa-vulkan-icd-freedreno" "vulkan-icd-freedreno"; do
+            if pkg search "^${turnip_pkg}$" 2>/dev/null | grep -q "^${turnip_pkg}$"; then
+                install_pkg "$turnip_pkg" "Turnip Driver"
+                break
+            fi
+        done
+    fi
 }
 
 step_audio() {
