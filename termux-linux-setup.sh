@@ -407,8 +407,11 @@ export XDG_SESSION_CLASS=user
 export XDG_RUNTIME_DIR="\${PREFIX:-/data/data/com.termux/files/usr}/tmp"
 export PULSE_RUNTIME_DIR="\${XDG_RUNTIME_DIR}/pulse"
 
-# Start dbus session daemon
-eval \$(dbus-daemon --session --fork --print-address 2>/dev/null)
+# Start dbus session daemon and export address
+DBUS_ADDR=\$(dbus-daemon --session --fork --print-address 2>/dev/null)
+if [ -n "\$DBUS_ADDR" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="\$DBUS_ADDR"
+fi
 
 # Disable unnecessary XFCE services on Android
 if [ "\$DE_CHOICE" = "1" ]; then
@@ -555,23 +558,22 @@ fi
 
 # --- Start VNC server ---
 echo "[*] Starting VNC server (display :1, port 5901)..."
-if ! pgrep -f "Xvnc" > /dev/null 2>&1; then
-    vncserver :1 -geometry 1920x1080 -depth 24 -localhost no -SecurityTypes VncAuth 2>/dev/null && echo "[+] VNC started on :1." || echo "[!] VNC failed to start."
-else
-    echo "[*] VNC already running."
-fi
-
-# --- VNC Password Warning ---
 if [ ! -f ~/.vnc/passwd ]; then
     echo ""
     echo "==============================================================="
     echo "  [!] VNC PASSWORD NOT SET!"
-    echo "  VNC connections will be REJECTED until you set a password."
+    echo "  VNC requires a password before it can start."
     echo "  Run this command in Termux:"
     echo "    vncpasswd"
     echo "  Then restart with: bash ~/start-linux.sh"
     echo "==============================================================="
     echo ""
+    VNC_STARTED=false
+elif ! pgrep -f "Xvnc" > /dev/null 2>&1; then
+    vncserver :1 -geometry 1920x1080 -depth 24 -localhost no -SecurityTypes VncAuth 2>/dev/null && echo "[+] VNC started on :1." && VNC_STARTED=true || { echo "[!] VNC failed to start. Check ~/.vnc/*.log"; VNC_STARTED=false; }
+else
+    echo "[*] VNC already running."
+    VNC_STARTED=true
 fi
 
 # --- Start PulseAudio ---
@@ -596,13 +598,19 @@ export DISPLAY=:0
 
 # --- Start dbus session daemon (required before DE) ---
 echo "[*] Starting D-Bus session bus..."
-eval \$(dbus-daemon --session --fork --print-address 2>/dev/null) || echo "[!] D-Bus failed, continuing anyway..."
+DBUS_ADDR=\$(dbus-daemon --session --fork --print-address 2>/dev/null)
+if [ -n "\$DBUS_ADDR" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="\$DBUS_ADDR"
+    echo "[+] D-Bus session bus started."
+else
+    echo "[!] D-Bus failed, continuing anyway..."
+fi
 
-# --- Disable XFCE services that conflict with Android ---
+# --- Disable XFCE services that conflict with Android (MUST be before DE launch) ---
 xfconf-query -c xfce4-session -p /startup/ssh-agent/enabled -n -t bool -s false 2>/dev/null || true
 xfconf-query -c xfce4-session -p /startup/gpg-agent/enabled -n -t bool -s false 2>/dev/null || true
 
-# Disable xfce4-power-manager (no UPower on Android — causes DPMS warnings)
+# Disable xfce4-power-manager (no UPower/ConsoleKit on Android — causes spam warnings)
 if [ "\$DE_CHOICE" = "1" ]; then
     mkdir -p ~/.config/autostart
     cat > ~/.config/autostart/xfce4-power-manager.desktop << 'XPM_EOF'
@@ -619,7 +627,11 @@ fi
 
 echo "---------------------------------------------------------------"
 echo "  [*] Open Termux-X11 app for local display!"
-echo "  [*] Connect via VNC to <IP>:5901 for remote!"
+if [ "\$VNC_STARTED" = "true" ]; then
+    echo "  [*] Connect via VNC to <IP>:5901 for remote!"
+else
+    echo "  [!] VNC not running — set password with: vncpasswd"
+fi
 echo "  [*] SSH via: ssh \$USER@<IP> -p 8022"
 echo "---------------------------------------------------------------"
 
