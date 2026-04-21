@@ -42,7 +42,7 @@ done
 # Log everything, but keep terminal output clean
 exec > >(tee -a "$LOGFILE") 2>&1
 
-TOTAL_STEPS=11
+TOTAL_STEPS=12
 CURRENT_STEP=0
 DE_CHOICE="1"
 DE_NAME="XFCE4"
@@ -323,12 +323,42 @@ step_wine() {
     fi
 }
 
+step_remote() {
+    update_progress
+    echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Configuring Remote Access (SSH & VNC)...${NC}"
+    install_pkg "openssh" "OpenSSH Server"
+    install_pkg "tigervnc" "TigerVNC Server"
+
+    # Generate SSH host keys if missing
+    ssh-keygen -A 2>/dev/null || true
+
+    # Create VNC startup configuration
+    mkdir -p ~/.vnc
+    cat > ~/.vnc/xstartup << 'VNC_EOF'
+#!/usr/bin/env bash
+export XDG_SESSION_TYPE=x11
+export XDG_SESSION_CLASS=user
+export XDG_RUNTIME_DIR="$PREFIX/tmp"
+eval $(dbus-daemon --session --fork --print-address 2>/dev/null)
+exec startxfce4
+VNC_EOF
+    chmod +x ~/.vnc/xstartup
+
+    # Prompt for VNC password if not set
+    if [ ! -f ~/.vnc/passwd ]; then
+        echo -e "\n${YELLOW}[!] VNC password not set. Please run:${NC} vncpasswd"
+    else
+        echo -e "${GREEN}[+] VNC password already configured.${NC}"
+    fi
+    echo -e "${GREEN}[+] Remote access configured. Will auto-start with desktop.${NC}\n"
+}
+
 step_launchers() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Creating Startup/Stop Scripts...${NC}"
     mkdir -p ~/.config
 
-    # Nuke old autostarts & cached sessions that spawn Plank/old configs
+    # Clean old autostarts & cached sessions
     rm -f ~/.config/autostart/plank.desktop ~/.config/autostart/cairo-dock.desktop 2>/dev/null
     rm -rf ~/.cache/sessions/* 2>/dev/null
 
@@ -351,6 +381,7 @@ GPU_EOF
         echo 'export PLASMA_USE_QT_SCALING=1' >> ~/.config/linux-gpu.sh
     fi
 
+    # DE commands
     case "$DE_CHOICE" in
         1) EXEC_CMD="exec startxfce4"; KILL_PAT="xfce4-session|xfdesktop" ;;
         2) EXEC_CMD="exec startlxqt"; KILL_PAT="lxqt-session|lxqt-panel" ;;
@@ -358,7 +389,8 @@ GPU_EOF
         4) EXEC_CMD="exec startplasma-x11"; KILL_PAT="startplasma-x11|kwin_x11|plasmashell" ;;
     esac
 
-    cat > ~/start-linux.sh << LAUNCHER_EOF
+    # 🟢 STARTER SCRIPT (Starts SSHD + VNC + X11 + DE)
+    cat > ~/start-linux.sh << STARTER_EOF
 #!/usr/bin/env bash
 echo "[*] Starting ${DE_NAME} on Android..."
 source ~/.config/linux-gpu.sh 2>/dev/null
@@ -366,15 +398,25 @@ source ~/.config/linux-gpu.sh 2>/dev/null
 echo "[*] Cleaning old sessions..."
 pkill -9 -f "termux.x11" 2>/dev/null || true
 pkill -9 -f "${KILL_PAT}" 2>/dev/null || true
-pkill -9 -f "pulseaudio|pipewire|dbus-daemon" 2>/dev/null || true
-rm -rf ~/.cache/sessions/* "\$PULSE_RUNTIME_DIR" 2>/dev/null
+pkill -9 -f "pulseaudio|pipewire" 2>/dev/null || true
 sleep 2
 
+rm -rf "\$PULSE_RUNTIME_DIR" 2>/dev/null
 mkdir -p "\$PULSE_RUNTIME_DIR" "\$PREFIX/tmp/dbus"
 
-echo "[*] Starting D-Bus session..."
-eval \$(dbus-daemon --session --fork --print-address 2>/dev/null)
-export DBUS_SESSION_BUS_ADDRESS
+echo "[*] Starting SSH server (port 8022)..."
+if ! pgrep -f "sshd" > /dev/null 2>&1; then
+    sshd 2>/dev/null || echo "[!] SSHD failed"
+else
+    echo "[*] SSHD already running."
+fi
+
+echo "[*] Starting VNC server (display :1, port 5901)..."
+if ! pgrep -f "Xvnc" > /dev/null 2>&1; then
+    vncserver :1 -geometry 1920x1080 -depth 24 -localhost no -SecurityTypes VncAuth 2>/dev/null || echo "[!] VNC failed"
+else
+    echo "[*] VNC already running."
+fi
 
 echo "[*] Starting audio..."
 pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null
@@ -386,24 +428,30 @@ sleep 4
 export DISPLAY=:0
 
 echo "-----------------------------------------------"
-echo "  [*] Open Termux-X11 app to view desktop!"
+echo "  [*] Open Termux-X11 app for local display!"
+echo "  [*] Connect via VNC to <IP>:5901 for remote!"
+echo "  [*] SSH via: ssh \$USER@<IP> -p 8022"
 echo "-----------------------------------------------"
 
-# Disable non-functional XFCE services on Android
 xfconf-query -c xfce4-session -p /startup/ssh-agent/enabled -n -t bool -s false 2>/dev/null || true
-xfconf-query -c xfce4-session -p /startup/gpg-agent/enabled -n -t bool -s false 2>/dev/null || true
-
 ${EXEC_CMD}
-LAUNCHER_EOF
+STARTER_EOF
     chmod +x ~/start-linux.sh
 
-    cat > ~/stop-linux.sh << 'STOPPER_EOF'
+    # 🔴 STOPPER SCRIPT (Stops VNC + DE, leaves SSHD running)
+    cat > ~/stop-linux.sh << STOPPER_EOF
 #!/usr/bin/env bash
-echo "[*] Stopping ${DE_NAME}..."
+echo "[*] Stopping Desktop & VNC..."
 pkill -9 -f "termux.x11" 2>/dev/null || true
 pkill -9 -f "${KILL_PAT}" 2>/dev/null || true
-pkill -9 -f "pulseaudio|pipewire|dbus-daemon" 2>/dev/null || true
-echo "[*] Desktop stopped."
+pkill -9 -f "pulseaudio|pipewire" 2>/dev/null || true
+
+# Stop VNC cleanly
+vncserver -kill :1 2>/dev/null || true
+
+# Note: SSHD left running for background remote access.
+# To stop SSHD manually: pkill sshd
+echo "[*] Desktop stopped. SSH remains active."
 STOPPER_EOF
     chmod +x ~/stop-linux.sh
     echo -e "  [+] Created ~/start-linux.sh & ~/stop-linux.sh"
@@ -481,7 +529,8 @@ main() {
     step_apps
     step_python
     step_wine
-    step_launchers
+    step_remote      # ← NEW: Installs & configures SSH/VNC
+    step_launchers   # ← Generates scripts that start/stop them
     step_shortcuts
     
     show_completion
