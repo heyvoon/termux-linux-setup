@@ -477,14 +477,20 @@ GPU_EOF
         4) EXEC_CMD="exec startplasma-x11"; KILL_PAT="startplasma-x11|kwin_x11|plasmashell" ;;
     esac
 
-    # PID file locations
-    PID_DIR='$HOME/.config/linux-pids'
+    # Write DE-specific values to a config file (sourced by start/stop scripts)
+    cat > ~/.config/linux-session.conf << CONF_EOF
+DE_NAME="${DE_NAME}"
+DE_CHOICE="${DE_CHOICE}"
+EXEC_CMD="${EXEC_CMD}"
+KILL_PAT="${KILL_PAT}"
+CONF_EOF
 
-    # 🟢 STARTER SCRIPT (Starts SSHD + VNC + X11 + DE)
-    # All heredoc uses single-quoted STARTER_EOF to prevent variable expansion
-    # Variables like $HOME, $PREFIX, $PULSE_RUNTIME_DIR expand at RUNTIME not GENERATION time
-    cat > ~/start-linux.sh << STARTER_EOF
+    # 🟢 STARTER SCRIPT — single-quoted heredoc, NO escaping needed
+    cat > ~/start-linux.sh << 'STARTER_EOF'
 #!/usr/bin/env bash
+
+# Source DE-specific config
+source ~/.config/linux-session.conf
 
 echo "[*] Starting ${DE_NAME} on Android..."
 
@@ -495,21 +501,21 @@ source ~/.config/linux-gpu.sh 2>/dev/null || true
 export LIBGL_DEBUG=quiet
 
 # Ensure runtime directories exist
-mkdir -p "\$XDG_RUNTIME_DIR" "\$PULSE_RUNTIME_DIR" "\$PREFIX/tmp/dbus"
+mkdir -p "$XDG_RUNTIME_DIR" "$PULSE_RUNTIME_DIR" "$PREFIX/tmp/dbus"
 
 # --- Clean stale PID files ---
-PID_DIR="\$HOME/.config/linux-pids"
-mkdir -p "\$PID_DIR"
+PID_DIR="$HOME/.config/linux-pids"
+mkdir -p "$PID_DIR"
 
 # --- Graceful cleanup of previous sessions ---
 echo "[*] Checking for stale sessions..."
 
 # Kill leftover DE processes
-if pgrep -f "${KILL_PAT}" > /dev/null 2>&1; then
+if pgrep -f "$KILL_PAT" > /dev/null 2>&1; then
     echo "[*] Stopping old desktop processes..."
-    pkill -TERM -f "${KILL_PAT}" 2>/dev/null || true
+    pkill -TERM -f "$KILL_PAT" 2>/dev/null || true
     sleep 2
-    pkill -KILL -f "${KILL_PAT}" 2>/dev/null || true
+    pkill -KILL -f "$KILL_PAT" 2>/dev/null || true
     sleep 1
 fi
 
@@ -545,8 +551,8 @@ rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
 rm -f ~/.vnc/*.lock 2>/dev/null || true
 
 # Clean PulseAudio runtime
-rm -rf "\$PULSE_RUNTIME_DIR"
-mkdir -p "\$PULSE_RUNTIME_DIR"
+rm -rf "$PULSE_RUNTIME_DIR"
+mkdir -p "$PULSE_RUNTIME_DIR"
 
 # --- Start SSHD (keep running across sessions) ---
 echo "[*] Starting SSH server (port 8022)..."
@@ -575,8 +581,8 @@ elif ! pgrep -f "Xvnc" > /dev/null 2>&1; then
     rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
 
     # Start Xvnc directly (more reliable than vncserver wrapper)
-    Xvnc :1 -auth \$HOME/.Xauthority -depth 24 -geometry 1920x1080 \
-        -rfbauth \$HOME/.vnc/passwd -rfbport 5901 -SecurityTypes VncAuth \
+    Xvnc :1 -auth "$HOME/.Xauthority" -depth 24 -geometry 1920x1080 \
+        -rfbauth "$HOME/.vnc/passwd" -rfbport 5901 -SecurityTypes VncAuth \
         > /dev/null 2>&1 &
     sleep 2
 
@@ -593,7 +599,6 @@ else
     VNC_STARTED=true
 fi
 
-
 # --- Start PulseAudio ---
 echo "[*] Starting audio server..."
 pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null && echo "[+] PulseAudio started." || echo "[!] PulseAudio failed or already running."
@@ -601,13 +606,13 @@ pulseaudio --start --exit-idle-time=-1 --disallow-exit 2>/dev/null && echo "[+] 
 # --- Start Termux-X11 ---
 echo "[*] Launching Termux-X11 on display :0..."
 termux-x11 :0 &
-TERMUX_X11_PID=\$!
-echo "\$TERMUX_X11_PID" > "\$PID_DIR/termux-x11.pid"
+TERMUX_X11_PID=$!
+echo "$TERMUX_X11_PID" > "$PID_DIR/termux-x11.pid"
 sleep 3
 
 # Verify Termux-X11 started
-if kill -0 \$TERMUX_X11_PID 2>/dev/null; then
-    echo "[+] Termux-X11 running (PID: \$TERMUX_X11_PID)"
+if kill -0 $TERMUX_X11_PID 2>/dev/null; then
+    echo "[+] Termux-X11 running (PID: $TERMUX_X11_PID)"
 else
     echo "[!] Termux-X11 may have failed. Check log."
 fi
@@ -616,9 +621,9 @@ export DISPLAY=:0
 
 # --- Start dbus session daemon (required before DE) ---
 echo "[*] Starting D-Bus session bus..."
-DBUS_ADDR=\$(dbus-daemon --session --fork --print-address 2>/dev/null)
-if [ -n "\$DBUS_ADDR" ]; then
-    export DBUS_SESSION_BUS_ADDRESS="\$DBUS_ADDR"
+DBUS_ADDR=$(dbus-daemon --session --fork --print-address 2>/dev/null)
+if [ -n "$DBUS_ADDR" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="$DBUS_ADDR"
     echo "[+] D-Bus session bus started."
 else
     echo "[!] D-Bus failed, continuing anyway..."
@@ -629,7 +634,7 @@ xfconf-query -c xfce4-session -p /startup/ssh-agent/enabled -n -t bool -s false 
 xfconf-query -c xfce4-session -p /startup/gpg-agent/enabled -n -t bool -s false 2>/dev/null || true
 
 # Disable xfce4-power-manager (no UPower/ConsoleKit on Android — causes spam warnings)
-if [ "\$DE_CHOICE" = "1" ]; then
+if [ "$DE_CHOICE" = "1" ]; then
     mkdir -p ~/.config/autostart
     cat > ~/.config/autostart/xfce4-power-manager.desktop << 'XPM_EOF'
 [Desktop Entry]
@@ -645,32 +650,36 @@ fi
 
 echo "---------------------------------------------------------------"
 echo "  [*] Open Termux-X11 app for local display!"
-if [ "\$VNC_STARTED" = "true" ]; then
-    MY_IP=\$(ip route get 1 2>/dev/null | awk '{print \$7; exit}' || ifconfig -a 2>/dev/null | grep -o 'inet [0-9.]*' | grep -v '127.0.0.1' | head -1 | awk '{print \$2}')
-    echo "  [*] VNC: Connect to \${MY_IP:-<phone-ip>}:5901 (UltraVNC, VncAuth)"
-    echo "  [*] SSH: ssh \$USER@\${MY_IP:-<phone-ip>} -p 8022"
+if [ "$VNC_STARTED" = "true" ]; then
+    MY_IP=$(ip route get 1 2>/dev/null | awk '{print $7; exit}' || ifconfig -a 2>/dev/null | grep -o 'inet [0-9.]*' | grep -v '127.0.0.1' | head -1 | awk '{print $2}')
+    echo "  [*] VNC: Connect to ${MY_IP:-<phone-ip>}:5901 (UltraVNC, VncAuth)"
+    echo "  [*] SSH: ssh $USER@${MY_IP:-<phone-ip>} -p 8022"
 else
     echo "  [!] VNC not running — set password with: vncpasswd"
-    echo "  [*] SSH: ssh \$USER@<phone-ip> -p 8022"
+    echo "  [*] SSH: ssh $USER@<phone-ip> -p 8022"
 fi
 echo "---------------------------------------------------------------"
 
 # --- Start Desktop Environment ---
 echo "[*] Starting ${DE_NAME}..."
-${EXEC_CMD}
+$EXEC_CMD
 STARTER_EOF
     chmod +x ~/start-linux.sh
 
-    # 🔴 STOPPER SCRIPT (Stops VNC + DE, leaves SSHD running)
-    cat > ~/stop-linux.sh << STOPPER_EOF
+    # 🔴 STOPPER SCRIPT — single-quoted heredoc, NO escaping needed
+    cat > ~/stop-linux.sh << 'STOPPER_EOF'
 #!/usr/bin/env bash
+
+# Source DE-specific config
+source ~/.config/linux-session.conf
+
 echo "[*] Stopping Desktop & VNC..."
 
 # --- Stop Desktop Environment gracefully ---
 echo "[*] Stopping ${DE_NAME}..."
-pkill -TERM -f "${KILL_PAT}" 2>/dev/null || true
+pkill -TERM -f "$KILL_PAT" 2>/dev/null || true
 sleep 2
-pkill -KILL -f "${KILL_PAT}" 2>/dev/null || true
+pkill -KILL -f "$KILL_PAT" 2>/dev/null || true
 
 # --- Stop Termux-X11 ---
 echo "[*] Stopping Termux-X11..."
