@@ -383,55 +383,31 @@ step_remote() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Configuring Remote Access (SSH & VNC)...${NC}"
     install_pkg "openssh" "OpenSSH Server"
-    install_pkg "tigervnc" "TigerVNC Server"
+
+    # Use x11vnc instead of TigerVNC/Xvnc — mirrors the REAL display :0
+    # so VNC and Termux-X11 show the same desktop (no black screen)
+    if pkg search "^x11vnc$" 2>/dev/null | grep -q x11vnc; then
+        install_pkg "x11vnc" "x11vnc (VNC mirror)"
+        VNC_BACKEND="x11vnc"
+    else
+        install_pkg "tigervnc" "TigerVNC Server (fallback)"
+        VNC_BACKEND="tigervnc"
+    fi
 
     # Generate SSH host keys if missing
     ssh-keygen -A 2>/dev/null || true
 
-    # Create VNC startup configuration (DE-agnostic)
+    # Create VNC password directory
     mkdir -p ~/.vnc
 
-    # Determine the correct DE start command (use session binary, NOT wrapper scripts
-    # that try to launch their own X server — Termux-X11 already provides :0)
-    case "$DE_CHOICE" in
-        1) DE_START_CMD="xfce4-session" ;;
-        2) DE_START_CMD="lxqt-session" ;;
-        3) DE_START_CMD="mate-session" ;;
-        4) DE_START_CMD="startplasma-x11" ;;
-    esac
-
-    cat > ~/.vnc/xstartup << XSTARTUP_EOF
-#!/usr/bin/env bash
-export XDG_SESSION_TYPE=x11
-export XDG_SESSION_CLASS=user
-export XDG_RUNTIME_DIR="\${PREFIX:-/data/data/com.termux/files/usr}/tmp"
-export PULSE_RUNTIME_DIR="\${XDG_RUNTIME_DIR}/pulse"
-
-# Start dbus session daemon and export address
-DBUS_ADDR=\$(dbus-daemon --session --fork --print-address 2>/dev/null)
-if [ -n "\$DBUS_ADDR" ]; then
-    export DBUS_SESSION_BUS_ADDRESS="\$DBUS_ADDR"
-fi
-
-# Disable unnecessary XFCE services on Android
-if [ "\$DE_CHOICE" = "1" ]; then
-    xfconf-query -c xfce4-session -p /startup/ssh-agent/enabled -n -t bool -s false 2>/dev/null || true
-    xfconf-query -c xfce4-session -p /startup/gpg-agent/enabled -n -t bool -s false 2>/dev/null || true
-fi
-
-exec ${DE_START_CMD}
-XSTARTUP_EOF
-    chmod +x ~/.vnc/xstartup
-    echo -e "${GREEN}[+] Created ~/.vnc/xstartup for ${DE_NAME}.${NC}"
-
-    # Prompt for VNC password if not set
+    # Prompt for VNC password (x11vnc uses x11vnc -storepasswd)
     if [ ! -f ~/.vnc/passwd ]; then
-        echo -e "\n${YELLOW}[!] VNC password not set. Please run:${NC} vncpasswd"
-        echo -e "${YELLOW}    You will be prompted to set a password (max 8 chars).${NC}\n"
+        echo -e "\n${YELLOW}[!] VNC password not set. Please run:${NC} x11vnc -storepasswd ~/.vnc/passwd"
+        echo -e "${YELLOW}    You will be prompted to set a password.${NC}\n"
     else
         echo -e "${GREEN}[+] VNC password already configured.${NC}"
     fi
-    echo -e "${GREEN}[+] Remote access configured. Will auto-start with desktop.${NC}\n"
+    echo -e "${GREEN}[+] Remote access configured. x11vnc will mirror display :0.${NC}\n"
 }
 
 # --- FIX 3: Launchers ---
@@ -483,6 +459,7 @@ DE_NAME="${DE_NAME}"
 DE_CHOICE="${DE_CHOICE}"
 EXEC_CMD="${EXEC_CMD}"
 KILL_PAT="${KILL_PAT}"
+VNC_BACKEND="${VNC_BACKEND}"
 CONF_EOF
 
     # 🟢 STARTER SCRIPT — single-quoted heredoc, NO escaping needed
@@ -529,13 +506,11 @@ if pgrep -f "termux.x11" > /dev/null 2>&1; then
 fi
 
 # Kill leftover VNC
-if pgrep -f "Xvnc" > /dev/null 2>&1; then
+if pgrep -f "x11vnc" > /dev/null 2>&1; then
     echo "[*] Stopping old VNC server..."
-    vncserver -kill :1 2>/dev/null || true
+    pkill -TERM -f "x11vnc" 2>/dev/null || true
     sleep 1
-    pkill -TERM -f "Xvnc" 2>/dev/null || true
-    sleep 1
-    pkill -KILL -f "Xvnc" 2>/dev/null || true
+    pkill -KILL -f "x11vnc" 2>/dev/null || true
 fi
 
 # Kill leftover PulseAudio
@@ -562,38 +537,30 @@ else
     echo "[*] SSHD already running."
 fi
 
-# --- Start VNC server ---
-echo "[*] Starting VNC server (display :1, port 5901)..."
+# --- Start VNC server (mirrors display :0 — same as Termux-X11) ---
+echo "[*] Starting VNC server (mirroring display :0, port 5901)..."
 if [ ! -f ~/.vnc/passwd ]; then
     echo ""
     echo "==============================================================="
     echo "  [!] VNC PASSWORD NOT SET!"
     echo "  VNC requires a password before it can start."
     echo "  Run this command in Termux:"
-    echo "    vncpasswd"
+    echo "    x11vnc -storepasswd"
     echo "  Then restart with: bash ~/start-linux.sh"
     echo "==============================================================="
     echo ""
     VNC_STARTED=false
-elif ! pgrep -f "Xvnc" > /dev/null 2>&1; then
-    # Remove stale lock files
-    rm -f ~/.vnc/localhost:1.lock 2>/dev/null || true
-    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
-
-    # Start Xvnc directly (more reliable than vncserver wrapper)
-    Xvnc :1 -auth "$HOME/.Xauthority" -depth 24 -geometry 1920x1080 \
-        -rfbauth "$HOME/.vnc/passwd" -rfbport 5901 -SecurityTypes VncAuth \
-        > /dev/null 2>&1 &
-    sleep 2
-
-    # Verify VNC is actually listening on port 5901
-    if ss -tlnp 2>/dev/null | grep -q ":5901 " || netstat -tlnp 2>/dev/null | grep -q ":5901 "; then
-        echo "[+] VNC started on :1 (port 5901)."
+elif ! pgrep -f "x11vnc" > /dev/null 2>&1; then
+    # x11vnc mirrors the REAL display :0 — same desktop as Termux-X11
+    x11vnc -display :0 -rfbauth "$HOME/.vnc/passwd" -rfbport 5901 \
+        -noxdamage -forever -shared -bg \
+        -o "$HOME/.vnc/x11vnc.log" 2>/dev/null && {
+        echo "[+] x11vnc started (mirroring display :0 on port 5901)."
         VNC_STARTED=true
-    else
-        echo "[!] VNC failed to start. Check: cat ~/.vnc/*.log"
+    } || {
+        echo "[!] x11vnc failed. Check: cat ~/.vnc/x11vnc.log"
         VNC_STARTED=false
-    fi
+    }
 else
     echo "[*] VNC already running."
     VNC_STARTED=true
@@ -689,11 +656,9 @@ pkill -KILL -f "termux.x11" 2>/dev/null || true
 
 # --- Stop VNC server ---
 echo "[*] Stopping VNC server..."
-vncserver -kill :1 2>/dev/null || true
+pkill -TERM -f "x11vnc" 2>/dev/null || true
 sleep 1
-pkill -TERM -f "Xvnc" 2>/dev/null || true
-sleep 1
-pkill -KILL -f "Xvnc" 2>/dev/null || true
+pkill -KILL -f "x11vnc" 2>/dev/null || true
 
 # --- Stop PulseAudio ---
 echo "[*] Stopping PulseAudio..."
