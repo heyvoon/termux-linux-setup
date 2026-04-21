@@ -570,7 +570,56 @@ if [ ! -f ~/.vnc/passwd ]; then
     echo ""
     VNC_STARTED=false
 elif ! pgrep -f "Xvnc" > /dev/null 2>&1; then
-    vncserver :1 -geometry 1920x1080 -depth 24 -localhost no -SecurityTypes VncAuth 2>/dev/null && echo "[+] VNC started on :1." && VNC_STARTED=true || { echo "[!] VNC failed to start. Check ~/.vnc/*.log"; VNC_STARTED=false; }
+    # Remove stale lock files
+    rm -f ~/.vnc/localhost:1.lock 2>/dev/null || true
+    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+
+    # Start Xvnc directly (more reliable than vncserver wrapper)
+    Xvnc :1 -auth \$HOME/.Xauthority -depth 24 -geometry 1920x1080 \
+        -rfbauth \$HOME/.vnc/passwd -rfbport 5901 -SecurityTypes VncAuth \
+        > /dev/null 2>&1 &
+    sleep 2
+
+    # Verify VNC is actually listening on port 5901
+    if ss -tlnp 2>/dev/null | grep -q ":5901 " || netstat -tlnp 2>/dev/null | grep -q ":5901 "; then
+        echo "[+] VNC started on :1 (port 5901)."
+        VNC_STARTED=true
+    else
+        echo "[!] VNC failed to start. Check: cat ~/.vnc/*.log"
+        VNC_STARTED=false
+    fi
+else
+    echo "[*] VNC already running."
+    VNC_STARTED=true
+fi
+else
+    echo "[*] VNC already running."
+    VNC_STARTED=true
+fi
+else
+    echo "[*] VNC already running."
+    VNC_STARTED=true
+fi
+else
+    echo "[*] VNC already running."
+    VNC_STARTED=true
+fi
+else
+    echo "[*] VNC already running."
+    VNC_STARTED=true
+fi
+else
+    echo "[*] VNC already running."
+    VNC_STARTED=true
+fi
+else
+    echo "[*] VNC already running."
+    VNC_STARTED=true
+fi
+else
+    echo "[*] VNC already running."
+    VNC_STARTED=true
+fi
 else
     echo "[*] VNC already running."
     VNC_STARTED=true
@@ -628,11 +677,13 @@ fi
 echo "---------------------------------------------------------------"
 echo "  [*] Open Termux-X11 app for local display!"
 if [ "\$VNC_STARTED" = "true" ]; then
-    echo "  [*] Connect via VNC to <IP>:5901 for remote!"
+    MY_IP=\$(ip route get 1 2>/dev/null | awk '{print \$7; exit}' || ifconfig -a 2>/dev/null | grep -o 'inet [0-9.]*' | grep -v '127.0.0.1' | head -1 | awk '{print \$2}')
+    echo "  [*] VNC: Connect to \${MY_IP:-<phone-ip>}:5901 (UltraVNC, VncAuth)"
+    echo "  [*] SSH: ssh \$USER@\${MY_IP:-<phone-ip>} -p 8022"
 else
     echo "  [!] VNC not running — set password with: vncpasswd"
+    echo "  [*] SSH: ssh \$USER@<phone-ip> -p 8022"
 fi
-echo "  [*] SSH via: ssh \$USER@<IP> -p 8022"
 echo "---------------------------------------------------------------"
 
 # --- Start Desktop Environment ---
